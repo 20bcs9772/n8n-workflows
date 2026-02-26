@@ -68,17 +68,56 @@ Each workflow is exported as an individual JSON file.
 ```bash
 #!/bin/bash
 
-EXPORT_DIR=~/n8n-data/workflows
-REPO_DIR=~/n8n-workflows
+set -e  # stop on error
 
+EXPORT_DIR="$HOME/n8n-data/workflows"
+REPO_DIR="$HOME/n8n-workflows"
+
+echo "==> Ensuring export directory exists"
+docker exec n8n mkdir -p /home/node/.n8n/workflows
+
+echo "==> Exporting workflows separately"
 docker exec n8n n8n export:workflow \
   --all \
   --separate \
   --output=/home/node/.n8n/workflows/
 
-cp $EXPORT_DIR/*.json $REPO_DIR/ 2>/dev/null
+cd "$EXPORT_DIR" || exit 1
 
-cd $REPO_DIR
+echo "==> Renaming workflow files"
+
+for file in *.json; do
+  [ -e "$file" ] || continue
+
+  # Extract name + id safely
+  name=$(jq -r '.name // empty' "$file")
+  id=$(jq -r '.id // empty' "$file")
+
+  if [[ -z "$name" || -z "$id" ]]; then
+    echo "Skipping invalid file: $file"
+    continue
+  fi
+
+  # Sanitize name
+  safe_name=$(echo "$name" | tr ' ' '-' | tr -cd '[:alnum:]-')
+
+  # Take first 6 chars of ID
+  short_id=${id:0:6}
+
+  new_name="${safe_name}_${short_id}.json"
+
+  # Avoid renaming to same name
+  if [[ "$file" != "$new_name" ]]; then
+    mv -f "$file" "$new_name"
+  fi
+done
+
+echo "==> Syncing to Git repository"
+
+cd "$REPO_DIR" || exit 1
+
+# Copy only workflow JSON files (no deletion, safe)
+cp "$EXPORT_DIR"/*.json "$REPO_DIR"/ 2>/dev/null || true
 
 git add *.json
 
@@ -88,6 +127,8 @@ else
   git commit -m "Auto-sync n8n workflows $(date)"
   git push
 fi
+
+echo "==> Sync complete."
 ```
 
 ---
